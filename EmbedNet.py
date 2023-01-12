@@ -26,17 +26,32 @@ class EmbedNet(nn.Module):
         ## Number of examples per identity per batch
         self.nPerClass = nPerClass
 
-    def forward(self, data, label=None):
+    def forward(self, data, label=None, supervised=True, get_feats=False):
+        
+        def reshaper(x):
+            return x.reshape(-1,x.size()[-3],x.size()[-2],x.size()[-1])
 
-        data    = data.reshape(-1,data.size()[-3],data.size()[-2],data.size()[-1])
-        outp    = self.__S__.forward(data)
+        if supervised:
+            data    = reshaper(data)
+            if get_feats:
+                return self.__S__.get_feat(data)
+            
+            outp    = self.__S__.forward(data)
 
-        if label == None:
-            return outp
+            if label == None:
+                return outp
 
+            else:
+                outp    = outp.reshape(self.nPerClass,-1,outp.size()[-1]).transpose(1,0).squeeze(1)
+                nloss = self.__L__.forward(outp,label)
+                return nloss
         else:
-            outp    = outp.reshape(self.nPerClass,-1,outp.size()[-1]).transpose(1,0).squeeze(1)
-            nloss = self.__L__.forward(outp,label)
+            # save the images
+            
+            data = [reshaper(x) for x in data]
+            h_i, h_j, z_i, z_j = self.__S__.forward(data[0], data[1])
+            
+            nloss = self.__L__.forward(z_i, z_j)
             return nloss
 
 
@@ -64,7 +79,52 @@ class ModelTrainer(object):
     # ## Train network
     # ## ===== ===== ===== ===== ===== ===== ===== =====
 
-    def train_network(self, loader):
+    def train_network_self_supervised(self, loader):
+        
+        self.__model__.train();
+
+        stepsize = loader.batch_size;
+
+        counter = 0;
+        index   = 0;
+        loss    = 0;
+
+        with tqdm(loader, unit="batch") as tepoch:
+        
+            for data in tepoch:
+
+                tepoch.total = tepoch.__len__()
+                data = [x.transpose(1, 0) for x in data]
+
+                ## Reset gradients
+                self.__model__.zero_grad();
+
+                ## Forward and backward passes
+                if self.mixedprec:
+                    with autocast():
+                        nloss = self.__model__([x.cuda() for x in data], supervised=False)
+                    self.scaler.scale(nloss).backward();
+                    self.scaler.step(self.__optimizer__);
+                    self.scaler.update();       
+                else:
+                    nloss = self.__model__([x.cuda() for x in data], supervised=False)
+                    nloss.backward();
+                    self.__optimizer__.step();
+
+                loss    += nloss.detach().cpu().item();
+                counter += 1;
+                index   += stepsize;
+
+                # Print statistics to progress bar
+                tepoch.set_postfix(loss=loss/counter)
+
+                if self.lr_step == 'iteration': self.__scheduler__.step()
+
+            if self.lr_step == 'epoch': self.__scheduler__.step()
+        
+        return (loss/counter);
+
+    def train_network_supervised(self, loader):
 
         self.__model__.train();
 
@@ -79,7 +139,7 @@ class ModelTrainer(object):
             for data, label in tepoch:
 
                 tepoch.total = tepoch.__len__()
-
+                
                 data    = data.transpose(1,0)
 
                 ## Reset gradients
@@ -145,7 +205,7 @@ class ModelTrainer(object):
         ## Extract features for every image
         for data in tqdm(test_loader):
             inp1                = data[0][0].cuda()
-            ref_feat            = self.__model__(inp1).detach().cpu()
+            ref_feat            = self.__model__(inp1, get_feats=True).detach().cpu()
             feats[data[1][0]]   = ref_feat
 
         all_scores = [];

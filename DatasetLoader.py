@@ -18,7 +18,7 @@ def worker_init_fn(worker_id):
     numpy.random.seed(numpy.random.get_state()[1][0] + worker_id)
 
 class meta_loader(Dataset):
-    def __init__(self, train_path, train_ext, transform):
+    def __init__(self, train_path, train_ext, transform, supervised=True):
         
         ## Read Training Files
         files = glob.glob('%s/*/*.%s'%(train_path,train_ext))
@@ -28,6 +28,7 @@ class meta_loader(Dataset):
         dictkeys.sort()
         dictkeys = { key : ii for ii, key in enumerate(dictkeys) }
 
+        self.supervised = supervised
         self.transform  = transform
 
         self.label_dict = {}
@@ -49,13 +50,25 @@ class meta_loader(Dataset):
         print('{:d} files from {:d} classes found.'.format(len(self.data_list),len(self.label_dict)))
 
     def __getitem__(self, indices):
+        if self.supervised:
+            feat = []
+            for index in indices:
+                feat.append(self.transform(Image.open(self.data_list[index])));
+            feat = numpy.stack(feat, axis=0)
 
-        feat = []
-        for index in indices:
-            feat.append(self.transform(Image.open(self.data_list[index])));
-        feat = numpy.stack(feat, axis=0)
+            return torch.FloatTensor(feat), self.data_label[index]
+        else:
+            feat1, feat2 = [], []
+            for index in indices:
+                img = Image.open(self.data_list[index])
+                img1 = self.transform(img)
+                img2 = self.transform(img)
+                feat1.append(img1)
+                feat2.append(img2)
+            feat1 = numpy.stack(feat1, axis=0)
+            feat2 = numpy.stack(feat2, axis=0)
 
-        return torch.FloatTensor(feat), self.data_label[index]
+            return (torch.FloatTensor(feat1), torch.FloatTensor(feat2))
 
     def __len__(self):
 
@@ -127,9 +140,9 @@ class meta_sampler(torch.utils.data.Sampler):
     def __len__(self):
         return self.num_iters
 
-def get_data_loader(batch_size, max_img_per_cls, nDataLoaderThread, nPerClass, train_path, train_ext, transform, **kwargs):
+def get_data_loader(batch_size, max_img_per_cls, nDataLoaderThread, nPerClass, train_path, train_ext, transform, supervised=True, **kwargs):
     
-    train_dataset = meta_loader(train_path, train_ext, transform)
+    train_dataset = meta_loader(train_path, train_ext, transform, supervised)
 
     train_sampler = meta_sampler(train_dataset, nPerClass, max_img_per_cls, batch_size)
 

@@ -25,6 +25,7 @@ parser.add_argument('--max_img_per_cls',    type=int, default=500,	help='Maximum
 parser.add_argument('--nDataLoaderThread',  type=int, default=5, 	help='Number of loader threads');
 
 ## Training details
+parser.add_argument('--train_mode', type=str, default="pretrain", help='Specifies the training mode. Either pretraining or classification');
 parser.add_argument('--test_interval',  type=int,   default=5,      help='Test and save every [test_interval] epochs');
 parser.add_argument('--max_epoch',      type=int,   default=100,    help='Maximum number of epochs');
 parser.add_argument('--trainfunc',      type=str,   default="softmax",  help='Loss function');
@@ -40,7 +41,7 @@ parser.add_argument('--weight_decay',   type=float, default=0,      help='Weight
 parser.add_argument('--margin',         type=float, default=0.1,    help='Loss margin, only for some loss functions');
 parser.add_argument('--scale',          type=float, default=30,     help='Loss scale, only for some loss functions');
 parser.add_argument('--nPerClass',      type=int,   default=1,      help='Number of images per class per batch, only for metric learning based losses');
-parser.add_argument('--nClasses',       type=int,   default=9500,   help='Number of classes in the softmax layer, only for softmax-based losses');
+parser.add_argument('--n_class',       type=int,   default=9500,   help='Number of classes in the softmax layer, only for softmax-based losses');
 
 ## Load and save
 parser.add_argument('--initial_model',  type=str,   default="",     help='Initial model weights');
@@ -54,6 +55,7 @@ parser.add_argument('--test_list',      type=str,   default="data/val_pairs.csv"
 
 ## Model definition
 parser.add_argument('--model',          type=str,   default="ResNet18", help='Name of model definition');
+parser.add_argument('--pretrain_weights', type=str, default=None, help='Path to pretraining weights');
 parser.add_argument('--nOut',           type=int,   default=512,    help='Embedding size in the last FC layer');
 
 ## For test only
@@ -78,12 +80,21 @@ def main_worker(args):
 
     it          = 1
 
-    ## Input transformations for training
-    train_transform = transforms.Compose(
-        [transforms.ToTensor(),
-         transforms.Resize(256),
-         transforms.RandomCrop([224,224]),
-         transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])])
+    ## Input transformations for training # From SimCLR
+    train_transform = transforms.Compose([
+        transforms.ToTensor(),
+        transforms.RandomApply([
+            transforms.ColorJitter(0.8, 0.8, 0.8, 0.2)
+        ], p=0.3),
+        transforms.RandomGrayscale(p=0.2),
+        transforms.RandomHorizontalFlip(),
+        transforms.RandomApply([
+            transforms.GaussianBlur((3, 3), (1.0, 2.0))
+        ], p=0.2),
+        transforms.Resize(256),
+        transforms.RandomCrop([224,224]),
+        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+    ])
 
     ## Input transformations for evaluation
     test_transform = transforms.Compose(
@@ -93,7 +104,7 @@ def main_worker(args):
          transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])])
 
     ## Initialise trainer and data loader
-    trainLoader = get_data_loader(transform=train_transform, **vars(args));
+    trainLoader = get_data_loader(transform=train_transform, supervised=(args.train_mode != 'pretrain'), **vars(args));
     trainer     = ModelTrainer(s, **vars(args))
 
     ## Load model weights
@@ -140,16 +151,26 @@ def main_worker(args):
     scorefile.write('{}\n{}\n'.format(strtime,args))
     scorefile.flush()
 
+    last_result = 1000000000 # very big number
+
     ## Core training script
     for it in range(it,args.max_epoch+1):
+
+        # testit
+        
+        # encoder_dict = trainer.__model__.__S__.encoder.state_dict()
+        # torch.save(encoder_dict, args.save_path+"/model{:09d}.model".format(it));
 
         clr = [x['lr'] for x in trainer.__optimizer__.param_groups]
 
         print(time.strftime("%Y-%m-%d %H:%M:%S"), it, "Training epoch {:d} with LR {:.5f} ".format(it,max(clr)));
 
-        loss = trainer.train_network(trainLoader);
+        if args.train_mode == 'pretrain':
+            loss = trainer.train_network_self_supervised(trainLoader);
+        else:
+            loss = trainer.train_network_supervised(trainLoader);
 
-        if it % args.test_interval == 0:
+        if True: # if it % args.test_interval == 0:
             
             sc, lab, trials = trainer.evaluateFromList(transform=test_transform, **vars(args))
             result = tuneThresholdfromScore(sc, lab, [1, 0.1]);
@@ -157,7 +178,15 @@ def main_worker(args):
             print("IT {:d}, Val EER {:.5f}".format(it, result[1]));
             scorefile.write("IT {:d}, Val EER {:.5f}\n".format(it, result[1]));
 
-            trainer.saveParameters(args.save_path+"/model{:09d}.model".format(it));
+            if result[1] < last_result:
+                last_result = result[1]    
+                print('Saving the model...')          
+                if args.train_mode == 'pretrain':                    
+                    # save only the encoder
+                    encoder_dict = trainer.__model__.__S__.encoder.state_dict()
+                    torch.save(encoder_dict, args.save_path+"/model{:09d}.model".format(it));
+                else:
+                    trainer.saveParameters(args.save_path+"/model{:09d}.model".format(it));
 
         print(time.strftime("%Y-%m-%d %H:%M:%S"), "TLOSS {:.5f}".format(loss));
         scorefile.write("IT {:d}, TLOSS {:.5f}\n".format(it, loss));
