@@ -48,7 +48,12 @@ class ModelTrainer(object):
 
         ## Optimizer (e.g. Adam or SGD)
         Optimizer = importlib.import_module('optimizer.'+optimizer).__getattribute__('Optimizer')
-        self.__optimizer__ = Optimizer(self.__model__.parameters(), **kwargs)
+        self.__optimizer__ = Optimizer(
+            [
+                self.__model__.__S__.parameters(),
+                self.__model__.__L__.parameters()
+            ], **kwargs
+        )
 
         ## Learning rate scheduler
         Scheduler = importlib.import_module('scheduler.'+scheduler).__getattribute__('Scheduler')
@@ -186,6 +191,8 @@ class ModelTrainer(object):
 
     def loadParameters(self, path):
 
+        fine_tune = False
+
         self_state = self.__model__.state_dict();
         loaded_state = torch.load(path);
         for name, param in loaded_state.items():
@@ -197,7 +204,11 @@ class ModelTrainer(object):
 
             if self_state[name].size() != loaded_state[origname].size():
                 print("Wrong parameter length: {}, model: {}, loaded: {}".format(origname, self_state[name].size(), loaded_state[origname].size()));
+                fine_tune = True
                 continue;
 
             self_state[name].copy_(param);
 
+        if fine_tune:
+            self.__optimizer__.param_groups[1]['lr'] = 0.00025 # set default for the classifier
+            print('fine-tuning the classifier')

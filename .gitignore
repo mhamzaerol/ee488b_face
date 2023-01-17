@@ -8,6 +8,9 @@
 data/
 exps/
 core.*
+vggface2/
+test/
+compare_augs/
 
 # NSML related
 .nsmlignore

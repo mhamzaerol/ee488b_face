@@ -11,6 +11,7 @@ import datetime
 from utils import *
 from EmbedNet import *
 from DatasetLoader import get_data_loader
+from augments.randomblock import RandomBlock
 import torchvision.transforms as transforms
 
 # ## ===== ===== ===== ===== ===== ===== ===== =====
@@ -78,12 +79,25 @@ def main_worker(args):
 
     it          = 1
 
-    ## Input transformations for training
-    train_transform = transforms.Compose(
-        [transforms.ToTensor(),
-         transforms.Resize(256),
-         transforms.RandomCrop([224,224]),
-         transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])])
+    ## Input transformations for training # From SimCLR
+    train_transform = transforms.Compose([
+        transforms.ToTensor(),
+        transforms.RandomApply([
+            transforms.ColorJitter(0.8, 0.8, 0.8, 0.2)
+        ], p=0.3),
+        transforms.RandomGrayscale(p=0.2),
+        transforms.RandomHorizontalFlip(),
+        transforms.RandomApply([
+            transforms.GaussianBlur((3, 3), (1.0, 2.0))
+        ], p=0.2),
+        transforms.Resize(256),
+        transforms.RandomCrop([224,224]),
+        transforms.RandomRotation(15),
+        transforms.RandomApply([
+            RandomBlock(0.25, 10)
+        ], p=0.2),
+        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]), 
+    ])
 
     ## Input transformations for evaluation
     test_transform = transforms.Compose(
@@ -145,11 +159,12 @@ def main_worker(args):
 
         clr = [x['lr'] for x in trainer.__optimizer__.param_groups]
 
-        print(time.strftime("%Y-%m-%d %H:%M:%S"), it, "Training epoch {:d} with LR {:.5f} ".format(it,max(clr)));
+        print(time.strftime("%Y-%m-%d %H:%M:%S"), it, "Training epoch {:d} with LR {:.10f} ".format(it,min(clr))); # show the min for now since I will be conducting ablations on the learning rate of fine-tuning
 
         loss = trainer.train_network(trainLoader);
 
-        if it % args.test_interval == 0:
+        if args.train_path == 'data/train': # for now, always save the model
+        # if it % args.test_interval == 0:
             
             sc, lab, trials = trainer.evaluateFromList(transform=test_transform, **vars(args))
             result = tuneThresholdfromScore(sc, lab, [1, 0.1]);
@@ -157,6 +172,8 @@ def main_worker(args):
             print("IT {:d}, Val EER {:.5f}".format(it, result[1]));
             scorefile.write("IT {:d}, Val EER {:.5f}\n".format(it, result[1]));
 
+            trainer.saveParameters(args.save_path+"/model{:09d}.model".format(it));
+        else:
             trainer.saveParameters(args.save_path+"/model{:09d}.model".format(it));
 
         print(time.strftime("%Y-%m-%d %H:%M:%S"), "TLOSS {:.5f}".format(loss));
