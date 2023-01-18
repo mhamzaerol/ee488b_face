@@ -18,10 +18,13 @@ def worker_init_fn(worker_id):
     numpy.random.seed(numpy.random.get_state()[1][0] + worker_id)
 
 class meta_loader(Dataset):
-    def __init__(self, train_path, train_ext, transform):
+    def __init__(self, train_path, train_ext, transform, augment=True): # Keep augment true for now
         
         ## Read Training Files
         files = glob.glob('%s/*/*.%s'%(train_path,train_ext))
+        
+        # shuffle them
+        random.shuffle(files)
 
         ## Make a mapping from Class Name to Class Number
         dictkeys = list(set([x.split('/')[-2] for x in files]))
@@ -29,6 +32,7 @@ class meta_loader(Dataset):
         dictkeys = { key : ii for ii, key in enumerate(dictkeys) }
 
         self.transform  = transform
+        self.augment = augment
 
         self.label_dict = {}
         self.data_list  = []
@@ -48,11 +52,40 @@ class meta_loader(Dataset):
 
         print('{:d} files from {:d} classes found.'.format(len(self.data_list),len(self.label_dict)))
 
+        # for debugging purposes
+
+        # for idx in range(len(self.data_list)):
+        #     # check whether a directory exists, if not, create it
+        #     if not os.path.exists(f'compare_augs/{idx}'):
+        #         os.makedirs(f'compare_augs/{idx}')
+            
+        #     img = Image.open(self.data_list[idx])
+        #     # save 
+        #     img.save(f'compare_augs/{idx}/img.png')
+        #     # augment1
+        #     for i in range(2):
+        #         augmented = self.transform(img)
+        #         # save 
+        #         augmented = augmented.numpy()
+        #         augmented = numpy.transpose(augmented, (1, 2, 0))
+        #         augmented = augmented * 255
+        #         augmented = augmented.astype(numpy.uint8)
+        #         augmented = Image.fromarray(augmented)
+        #         augmented.save(f'compare_augs/{idx}/augmented_{i}.png')
+
+        # quit()
+
     def __getitem__(self, indices):
 
-        feat = []
+        feat = [[], []]
         for index in indices:
-            feat.append(self.transform(Image.open(self.data_list[index])));
+            img = Image.open(self.data_list[index])
+            for _ in range(1 + (1 if self.augment else 0)):
+                augmented = self.transform(img)
+                feat[_].append(augmented)
+
+        
+        feat = feat[0] + feat[1]
         feat = numpy.stack(feat, axis=0)
 
         return torch.FloatTensor(feat), self.data_label[index]
